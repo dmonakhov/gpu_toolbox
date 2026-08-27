@@ -1,0 +1,64 @@
+# nv_intr_monitor DaemonSet: per-node watcher for latched NVIDIA GPU
+# interrupt vectors (lost MSI-X interrupts).
+#
+# Requirements:
+#   - privileged: BAR0 access via /sys/bus/pci/devices/*/resource0
+#     needs root and an unrestricted sysfs.
+#   - hostPath /sys so the container sees the node's PCI tree.
+#
+# Adjust the nodeSelector / image for your cluster before applying.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nv-intr-monitor
+  namespace: kube-system
+  labels:
+    app: nv-intr-monitor
+spec:
+  selector:
+    matchLabels:
+      app: nv-intr-monitor
+  template:
+    metadata:
+      labels:
+        app: nv-intr-monitor
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9834"
+        prometheus.io/path: "/metrics"
+    spec:
+      nodeSelector:
+        nvidia.com/gpu.present: "true"
+      tolerations:
+        - operator: Exists
+      hostPID: false
+      containers:
+        - name: nv-intr-monitor
+          image: ghcr.io/dmonakhov/nv-intr-monitor:latest
+          args:
+            - -interval=30s
+            - -confirm=3
+            - -listen=:9834
+          securityContext:
+            privileged: true
+          ports:
+            - name: metrics
+              containerPort: 9834
+          volumeMounts:
+            - name: sys
+              mountPath: /sys
+              readOnly: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          # NOTE: do NOT wire /healthz into livenessProbe -- a latched bit
+          # returns 503 by design and restarting the monitor won't fix the
+          # GPU. Alert on the nvidia_intr_gpu_stuck metric instead.
+      volumes:
+        - name: sys
+          hostPath:
+            path: /sys
